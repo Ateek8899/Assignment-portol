@@ -11,7 +11,7 @@ import AssignmentDetail from './pages/AssignmentDetail'
 import Contact from './pages/Contact'
 import StudentLogin from './pages/StudentLogin'
 import TeacherLogin from './pages/TeacherLogin'
-import TeacherRegister from './pages/TeacherRegister_fixed'
+import TeacherRegister from './pages/TeacherRegister'
 
 export default function App() {
   return (

@@ -1,51 +1,98 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { db } from '../services/localDb'
+import {
+  currentTeacher,
+  findTeacherByEmail,
+  findTeacherByPhone,
+  getAssignmentsByTeacherIdentity,
+  getAdminMessages,
+  getSemesterMode,
+  addAssignment,
+  logoutTeacher,
+  ackAdminMessage,
+  getSubmissionsByAssignment,
+  updateSubmission
+} from '../services/firebaseDb'
 
 export default function TeacherDashboard() {
   const navigate = useNavigate()
-  const me = useMemo(() => db.currentTeacher(), [])
-  const profile = useMemo(() => {
-    if (!me) return null
-    return db.findTeacherByEmail?.(me.email) || db.findTeacherByPhone?.(me.phone) || me
-  }, [me])
+  const me = useMemo(() => currentTeacher(), [])
+  const [profile, setProfile] = useState(me || null)
   const [teacherName, setTeacherName] = useState(me?.name || '')
   const [subject, setSubject] = useState('')
   const [assignDate, setAssignDate] = useState('')
   const [dueDate, setDueDate] = useState('')
   const [description, setDescription] = useState('')
-  const [studentRoll, setStudentRoll] = useState('')
-  const [startRoll, setStartRoll] = useState('')
-  const [endRoll, setEndRoll] = useState('')
-  const [list, setList] = useState([])
+  const [assignments, setAssignments] = useState([])
   const [course, setCourse] = useState('BSCS')
   const [semester, setSemester] = useState('1')
   const [messages, setMessages] = useState([])
-  const [selected, setSelected] = useState(null) // { a, s }
-  const myIdentity = (me?.email || me?.phone) || ''
+  const [selected, setSelected] = useState(null) // { assignment, submission }
+  const [loadingAssignments, setLoadingAssignments] = useState(true)
+  const [loadingMessages, setLoadingMessages] = useState(true)
+  const [semesterMode, setSemesterMode] = useState('odd')
+  const [assignmentsError, setAssignmentsError] = useState('')
+  const [messagesError, setMessagesError] = useState('')
+  const [formError, setFormError] = useState('')
+  const [formSuccess, setFormSuccess] = useState('')
+  const [isSaving, setIsSaving] = useState(false)
+  const myIdentity = (me?.email || me?.phone || me?.id) || ''
+  const semesterOptions = useMemo(() => (
+    semesterMode === 'even' ? ['2','4','6','8'] : ['1','3','5','7']
+  ), [semesterMode])
 
   // Redirect if not logged in
   useEffect(() => {
     if (!me) navigate('/teacher-login')
   }, [me, navigate])
 
-  // Fetch assignments by teacher
   useEffect(() => {
-    if (!me) return
-    const identity = me.email || me.phone
-    setList(db.getAssignmentsByTeacherIdentity(identity))
+    if (!me) {
+      setAssignments([])
+      return
+    }
+    const identity = me.email || me.phone || me.id
+    let active = true
+    setAssignmentsError('')
+    setLoadingAssignments(true)
+    getAssignmentsByTeacherIdentity(identity)
+      .then(async (items = []) => {
+        if (!active) return
+        const withSubmissions = await Promise.all(items.map(async (assignment) => {
+          const submissions = await getSubmissionsByAssignment(assignment.id)
+          return { ...assignment, submissions }
+        }))
+        setAssignments(withSubmissions)
+      })
+      .catch((err) => {
+        if (!active) return
+        setAssignmentsError(err?.message || 'Failed to load assignments')
+        setAssignments([])
+      })
+      .finally(() => {
+        if (!active) return
+        setLoadingAssignments(false)
+      })
+    return () => {
+      active = false
+    }
   }, [me])
 
   // Load admin messages for this teacher
   const loadMessages = () => {
     if (!me) return
-    const all = db.getAdminMessages?.() || []
-    const mine = all.filter(m => (
-      m.to === 'all' ||
-      (m.to === 'teacher' && String(m.phone) === String(me.phone)) ||
-      (m.to === 'teacherEmail' && String(m.email || '').toLowerCase() === String(me.email || '').toLowerCase())
-    ))
-    setMessages(mine)
+    setMessagesError('')
+    setLoadingMessages(true)
+    getAdminMessages()?.then(all => {
+      const mine = (all || []).filter(m => (
+        m.to === 'all' ||
+        (m.to === 'teacher' && String(m.phone) === String(me.phone)) ||
+        (m.to === 'teacherEmail' && String(m.email || '').toLowerCase() === String(me.email || '').toLowerCase())
+      ))
+      setMessages(mine)
+    }).catch((err) => {
+      setMessagesError(err?.message || 'Failed to load admin messages')
+    }).finally(() => setLoadingMessages(false))
   }
   useEffect(() => { loadMessages() }, [me])
 
@@ -59,40 +106,54 @@ export default function TeacherDashboard() {
 
   // Ensure semester aligns with admin mode options
   useEffect(() => {
-    const opts = (db.getSemesterMode?.() === 'even') ? ['2','4','6','8'] : ['1','3','5','7']
-    if (!opts.includes(String(semester))) setSemester(opts[0])
-  }, [semester])
+    let active = true
+    getSemesterMode().then(mode => {
+      if (!active) return
+      if (mode) setSemesterMode(mode)
+    }).catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [])
 
-  const onCreate = (e) => {
+  useEffect(() => {
+    const opts = semesterOptions
+    if (!opts.includes(String(semester))) setSemester(opts[0])
+  }, [semesterOptions, semester])
+
+  const onCreate = async (e) => {
     e.preventDefault()
     if (!me) return
-
-    const assignedTo = { cohort: { degree: course, semester: String(semester) } }
-
-    const rec = db.addAssignment({
-      subject,
-      teacherName,
-      classOrCourse: course,
-      assignDate,
-      dueDate,
-      description,
-      assignedTo,
-      createdBy: me.email || me.phone
-    })
-
-    setList(prev => [rec, ...prev])
-    setSubject('')
-    setAssignDate('')
-    setDueDate('')
-    setDescription('')
-    setStudentRoll('')
-    setStartRoll('')
-    setEndRoll('')
+    setFormError('')
+    setFormSuccess('')
+    setIsSaving(true)
+    try {
+      const record = await addAssignment({
+        teacherId: me.id,
+        teacherName,
+        teacherEmail: me.email,
+        teacherPhone: me.phone,
+        subject,
+        classOrCourse: course,
+        semester,
+        assignDate,
+        dueDate,
+        description
+      })
+      setAssignments(prev => [{ ...record, submissions: [] }, ...prev])
+      setSubject('')
+      setAssignDate('')
+      setDueDate('')
+      setDescription('')
+      setFormSuccess('Assignment created successfully')
+    } catch (err) {
+      setFormError(err?.message || 'Failed to create assignment')
+    }
+    setIsSaving(false)
   }
 
   const onLogout = () => {
-    db.logoutTeacher()
-    navigate('/teacher-login')
+    logoutTeacher().finally(() => navigate('/teacher-login'))
   }
 
   return (
@@ -125,11 +186,19 @@ export default function TeacherDashboard() {
                   <div key={m.id} className="card" style={{ background: '#ffffff' }}>
                     <div className="card-header">
                       <strong>From Admin</strong>
-                      <span className="badge">{new Date(m.createdAt).toLocaleString()}</span>
+                      <span className="badge">{m.createdAt ? new Date(m.createdAt).toLocaleString() : '—'}</span>
                     </div>
                     <p className="muted">{m.message}</p>
                     <div className="card-actions" style={{ display: 'flex', gap: 8 }}>
-                      <button className="btn" disabled={alreadyAcked} onClick={() => { db.ackAdminMessage?.(m.id, myIdentity); loadMessages() }}>{alreadyAcked ? 'Acknowledged' : 'OK'}</button>
+                      <button
+                        className="btn"
+                        disabled={alreadyAcked}
+                        onClick={() => {
+                          ackAdminMessage(m.id, myIdentity).finally(() => loadMessages())
+                        }}
+                      >
+                        {alreadyAcked ? 'Acknowledged' : 'OK'}
+                      </button>
                     </div>
                   </div>
                 )
@@ -170,7 +239,7 @@ export default function TeacherDashboard() {
                 <label>
                   Semester
                   <select value={semester} onChange={e => setSemester(e.target.value)} required>
-                    {(db.getSemesterMode?.() === 'even' ? ['2','4','6','8'] : ['1','3','5','7']).map(s => (
+                    {semesterOptions.map(s => (
                       <option key={s} value={s}>{s}</option>
                     ))}
                   </select>
@@ -212,7 +281,6 @@ export default function TeacherDashboard() {
                 />
               </label>
 
-
               <div className="card-actions">
                 <button className="btn btn-pro" type="submit">Save Assignment</button>
                 <button type="button" className="btn btn-secondary" onClick={onLogout}>Logout</button>
@@ -224,9 +292,9 @@ export default function TeacherDashboard() {
 
       <article className="card">
         <h3 style={{ marginTop: 0 }}>Your Assignments</h3>
-        {list.length === 0 && <p className="muted">No assignments yet.</p>}
+        {assignments.length === 0 && <p className="muted">No assignments yet.</p>}
         <div className="grid">
-          {list.map(a => (
+          {assignments.map(a => (
             <div key={a.id} className="card">
               <div className="card-header">
                 <strong className="subject-title">{a.subject}</strong>
@@ -266,19 +334,19 @@ export default function TeacherDashboard() {
 
               <p>
                 <span className="field-label">Submissions:</span>
-                <span className="field-value">{db.getSubmissionsByAssignment(a.id).length}</span>
+                <span className="field-value">{a.submissions?.length ?? 0}</span>
               </p>
 
-              {db.getSubmissionsByAssignment(a.id).length > 0 && (
+              {a.submissions?.length > 0 && (
                 <div style={{ marginTop: 8 }}>
                   <h4 style={{ margin: '8px 0' }}>Submissions</h4>
                   <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}>
-                    {db.getSubmissionsByAssignment(a.id).map(s => (
+                    {a.submissions.map(s => (
                       <button
                         key={s.id}
                         className="card"
                         style={{ textAlign: 'left', cursor: 'pointer' }}
-                        onClick={() => setSelected({ a, s })}
+                        onClick={() => setSelected({ assignment: a, submission: s })}
                       >
                         <div className="card-header">
                           <strong>{s.student.name}</strong>
@@ -298,26 +366,26 @@ export default function TeacherDashboard() {
         <div className="center-overlay" onClick={() => setSelected(null)}>
           <div className="center-card" onClick={e => e.stopPropagation()}>
             <h3 className="page-title" style={{ margin: 0 }}>Student Record</h3>
-            <p className="muted">Assignment: {selected.a.subject} • Due {selected.a.dueDate}</p>
+            <p className="muted">Assignment: {selected.assignment.subject} • Due {selected.assignment.dueDate}</p>
             <div className="grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
               <div>
                 <h4 style={{ marginTop: 0 }}>Student</h4>
-                <p><span className="field-label">Name:</span><span className="field-value">{selected.s.student.name}</span></p>
-                <p><span className="field-label">Roll:</span><span className="field-value">{selected.s.student.rollNo}</span></p>
-                <p><span className="field-label">Class:</span><span className="field-value">{selected.s.student.className}</span></p>
-                <p><span className="field-label">Phone:</span><span className="field-value">{selected.s.student.phone}</span></p>
+                <p><span className="field-label">Name:</span><span className="field-value">{selected.submission.student.name}</span></p>
+                <p><span className="field-label">Roll:</span><span className="field-value">{selected.submission.student.rollNo}</span></p>
+                <p><span className="field-label">Class:</span><span className="field-value">{selected.submission.student.className}</span></p>
+                <p><span className="field-label">Phone:</span><span className="field-value">{selected.submission.student.phone}</span></p>
               </div>
               <div>
                 <h4 style={{ marginTop: 0 }}>Submission</h4>
-                <p><span className="field-label">File:</span><span className="field-value">{selected.s.fileName}</span></p>
-                <p><span className="field-label">Submitted:</span><span className="field-value">{new Date(selected.s.submittedAt).toLocaleString()}</span></p>
-                {selected.s.description && <p className="muted">Note: {selected.s.description}</p>}
+                <p><span className="field-label">File:</span><span className="field-value">{selected.submission.fileName}</span></p>
+                <p><span className="field-label">Submitted:</span><span className="field-value">{selected.submission.submittedAt ? new Date(selected.submission.submittedAt).toLocaleString() : '—'}</span></p>
+                {selected.submission.description && <p className="muted">Note: {selected.submission.description}</p>}
                 {/* Inline preview */}
                 {(() => {
-                  const mt = String(selected.s.mimeType || '').toLowerCase()
+                  const mt = String(selected.submission.mimeType || '').toLowerCase()
                   if (mt.includes('pdf')) {
                     return (
-                      <iframe title="preview" src={selected.s.dataUrl} style={{ width: '100%', height: 360, border: '1px solid var(--card-border)', borderRadius: 8 }} />
+                      <iframe title="preview" src={selected.submission.dataUrl} style={{ width: '100%', height: 360, border: '1px solid var(--card-border)', borderRadius: 8 }} />
                     )
                   }
                   if (mt.startsWith('image/')) {

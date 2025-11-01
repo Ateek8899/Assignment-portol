@@ -1,14 +1,17 @@
 import { useParams } from 'react-router-dom'
-import { useMemo, useState } from 'react'
-import { db } from '../services/localDb'
+import { useEffect, useMemo, useState } from 'react'
+import { addSubmission, getAssignmentById } from '../services/firebaseDb'
+import { getCurrentStudent } from '../services/session'
 
 export default function AssignmentDetail() {
   const { id } = useParams()
-  const me = useMemo(() => db.currentStudent(), [])
-  const assignment = useMemo(() => db.getAssignmentById(id), [id])
+  const [student] = useState(() => getCurrentStudent())
+  const [assignment, setAssignment] = useState(null)
   const [file, setFile] = useState(null)
   const [desc, setDesc] = useState('')
   const [status, setStatus] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
   const isPastDue = useMemo(() => {
     if (!assignment?.dueDate) return false
     const now = new Date()
@@ -16,9 +19,32 @@ export default function AssignmentDetail() {
     return now > due
   }, [assignment])
 
+  useEffect(() => {
+    let active = true
+    setLoading(true)
+    getAssignmentById(id)
+      .then((data) => {
+        if (!active) return
+        setAssignment(data)
+      })
+      .catch((err) => {
+        if (!active) return
+        setError(err?.message || 'Failed to load assignment')
+      })
+      .finally(() => {
+        if (!active) return
+        setLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [id])
+
   const submit = (e) => {
     e.preventDefault()
-    if (!me) return alert('Please login as student again')
+    setError('')
+    setStatus('')
+    if (!student) { setError('Please login as student again'); return }
     if (isPastDue) { setStatus('Submission closed. Due date has passed.'); return }
     if (!file) return alert('Select a file first')
     const allowed = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword']
@@ -27,24 +53,36 @@ export default function AssignmentDetail() {
 
     const reader = new FileReader()
     reader.onload = () => {
-      db.addSubmission({
+      addSubmission({
         assignmentId: id,
-        student: { name: me.name, rollNo: me.rollNo, className: me.className, phone: me.phone },
+        student: {
+          id: student.id,
+          name: student.name,
+          rollNo: student.rollNo,
+          className: student.className,
+          phone: student.phone
+        },
         description: desc,
         fileName: file.name,
         mimeType: file.type || 'application/octet-stream',
-        dataUrl: reader.result,
-        submittedAt: new Date().toISOString()
+        dataUrl: reader.result
       })
-      setStatus('Submitted successfully')
-      setFile(null)
-      setDesc('')
+        .then(() => {
+          setStatus('Submitted successfully')
+          setFile(null)
+          setDesc('')
+        })
+        .catch((err) => {
+          setError(err?.message || 'Failed to submit assignment')
+        })
     }
     reader.readAsDataURL(file)
   }
 
   return (
     <section className="section">
+      {loading && <p className="muted">Loading assignment...</p>}
+      {error && <p className="muted" style={{ color: 'crimson' }}>{error}</p>}
       {isPastDue && (
         <div className="center-overlay">
           <div className="center-card">

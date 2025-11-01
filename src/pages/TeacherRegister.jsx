@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { addTeacher, getTeachers } from '../services/localDb';
+import { registerTeacher, getTeachers } from '../services/firebaseDb';
+import { getCurrentTeacher } from '../services/session';
 
 export default function TeacherRegister() {
   // Teacher self-registration state
@@ -12,7 +13,13 @@ export default function TeacherRegister() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    const me = getCurrentTeacher();
+    if (me) navigate('/teacher/dashboard');
+  }, [navigate]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -30,45 +37,32 @@ export default function TeacherRegister() {
     }
 
     try {
-      // Check if teacher already exists
+      setIsSubmitting(true);
       const teachers = await getTeachers();
       if (teachers.some(t => t.email === email)) {
         setError('A teacher with this email already exists');
+        setIsSubmitting(false);
         return;
       }
-      
-      // Add teacher to local storage
-      await addTeacher({
+
+      await registerTeacher({
         email,
         name,
         phone,
         subject,
-        password, // Note: In a real app, never store plain passwords
-        role: 'teacher',
-        createdAt: new Date().toISOString(),
-        status: 'active'
+        password
       });
-      
-      // Show success message
-      setInfo('Registration successful! Redirecting to login...');
-      
-      // Clear form
-      setName('');
-      setEmail('');
-      setPhone('');
-      setSubject('');
-      setPassword('');
-      setConfirmPassword('');
-      
-      // Redirect to login after a short delay
+
+      setInfo('Registration successful! Redirecting to dashboard...');
       setTimeout(() => {
-        navigate('/teacher-login');
-      }, 2000);
-      
+        navigate('/teacher/dashboard');
+      }, 1200);
+
     } catch (error) {
       console.error('Registration error:', error);
-      setError('An error occurred during registration. Please try again.');
+      setError(error?.message || 'An error occurred during registration. Please try again.');
     }
+    setIsSubmitting(false);
   };
 
   return (
@@ -156,7 +150,7 @@ export default function TeacherRegister() {
             </div>
             
             <div className="form-actions">
-              <button type="submit" className="btn btn-primary btn-block">
+              <button type="submit" className="btn btn-primary btn-block" disabled={isSubmitting}>
                 Register
               </button>
               

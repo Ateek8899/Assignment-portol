@@ -1,6 +1,12 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { db } from "../services/localDb";
+import {
+  getTeachers,
+  getStudents,
+  getAssignments,
+  logoutAdmin
+} from "../services/firebaseDb";
+import { getCurrentAdmin } from "../services/session";
 import "./AdminDashboard.css";
 
 // ===== Icons =====
@@ -32,6 +38,7 @@ export default function AdminDashboard() {
   const [showTeacherForm, setShowTeacherForm] = useState(false);
   const [showStudentForm, setShowStudentForm] = useState(false);
   const [formErrors, setFormErrors] = useState({});
+  const [admin, setAdmin] = useState(null);
 
   const [formData, setFormData] = useState({
     name: "",
@@ -59,23 +66,25 @@ export default function AdminDashboard() {
   });
 
   useEffect(() => {
-    const currentUser = JSON.parse(localStorage.getItem("currentUser"));
-    if (!currentUser || currentUser.role !== "admin") {
+    const current = getCurrentAdmin();
+    if (!current) {
       navigate("/admin-login");
       return;
     }
+    setAdmin(current);
 
     const loadData = async () => {
       try {
         const [teachersData, studentsData, assignmentsData] = await Promise.all([
-          db.getTeachers(),
-          db.getStudents(),
-          db.getAssignments(),
+          getTeachers(),
+          getStudents(),
+          getAssignments(),
         ]);
         setTeachers(teachersData || []);
         setStudents(studentsData || []);
         setAssignments(assignmentsData || []);
       } catch (err) {
+        console.error("Failed to load admin dashboard data", err);
         setError("Failed to load data");
       } finally {
         setIsLoading(false);
@@ -120,8 +129,7 @@ export default function AdminDashboard() {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem("currentUser");
-    navigate("/admin-login");
+    logoutAdmin().finally(() => navigate("/admin-login"));
   };
 
   if (isLoading) return <div className="loading-state">Loading...</div>;
@@ -131,7 +139,10 @@ export default function AdminDashboard() {
     <div className="admin-container">
       {/* ===== Header ===== */}
       <header className="admin-header">
-        <h1>Admin Dashboard</h1>
+        <div>
+          <h1>Admin Dashboard</h1>
+          {admin && <p className="muted">Signed in as {admin.name || admin.email}</p>}
+        </div>
         <button onClick={handleLogout}>Logout</button>
       </header>
 

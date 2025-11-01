@@ -1,6 +1,7 @@
-import { useState } from 'react'
-import { db, getTeachers } from '../services/localDb'
+import { useEffect, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
+import { loginTeacher, resetPassword } from '../services/firebaseDb'
+import { getCurrentTeacher } from '../services/session'
 
 export default function TeacherLogin() {
   const [email, setEmail] = useState('')
@@ -9,31 +10,27 @@ export default function TeacherLogin() {
   const [forgotOpen, setForgotOpen] = useState(false)
   const [fpEmail, setFpEmail] = useState('')
   const [fpNew, setFpNew] = useState('')
+  const [message, setMessage] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const navigate = useNavigate()
+
+  useEffect(() => {
+    const me = getCurrentTeacher()
+    if (me) navigate('/teacher/dashboard')
+  }, [navigate])
 
   const handleLogin = async (e) => {
     e.preventDefault()
+    setError('')
+    setMessage('')
     try {
-      // Get all teachers from local storage
-      const teachers = await getTeachers()
-      const teacher = teachers.find(t => t.email === email && t.password === password)
-      
-      if (teacher) {
-        // Store user in localStorage
-        localStorage.setItem('currentUser', JSON.stringify({
-          id: teacher.id,
-          email: teacher.email,
-          name: teacher.name,
-          role: 'teacher'
-        }))
-        
-        navigate('/teacher/dashboard')
-      } else {
-        setError('Invalid email or password')
-      }
+      setIsSubmitting(true)
+      await loginTeacher({ email, password })
+      navigate('/teacher/dashboard')
     } catch (error) {
-      setError('An error occurred during login')
+      setError(error?.message || 'An error occurred during login')
     }
+    setIsSubmitting(false)
   }
 
   const handleResetPassword = () => {
@@ -43,8 +40,12 @@ export default function TeacherLogin() {
       setError('Please enter your email address')
       return
     }
-    
-    setError('Password reset functionality is not available in local storage mode. Please contact support.')
+
+    setIsSubmitting(true)
+    resetPassword(fpEmail)
+      .then(() => setMessage('Password reset email sent. Check your inbox.'))
+      .catch((err) => setError(err?.message || 'Failed to send reset email.'))
+      .finally(() => setIsSubmitting(false))
   }
 
   return (
@@ -53,6 +54,7 @@ export default function TeacherLogin() {
         <h1 className="auth-title">Teacher Login</h1>
         <p className="auth-subtitle">Enter your credentials to continue</p>
         {error && <p className="muted" style={{ color: 'crimson', textAlign: 'center' }}>{error}</p>}
+        {message && <p className="muted" style={{ color: 'crimson', textAlign: 'center' }}>{message}</p>}
         <form onSubmit={handleLogin} className="form auth-form" autoComplete="off">
           <label>
             Email
@@ -63,7 +65,7 @@ export default function TeacherLogin() {
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required autoComplete="new-password" />
           </label>
           <div className="card-actions">
-            <button className="btn btn-pro" type="submit">Login</button>
+            <button className="btn btn-pro" type="submit" disabled={isSubmitting}>Login</button>
             <button className="btn btn-light" type="button" onClick={() => { setForgotOpen(true); setError('') }}>Forgot password?</button>
           </div>
           <div>

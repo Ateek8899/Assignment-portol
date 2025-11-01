@@ -1,23 +1,44 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { db } from '../services/localDb'
+import { getAssignmentsForStudent, logoutStudent } from '../services/firebaseDb'
+import { getCurrentStudent } from '../services/session'
 
 export default function StudentDashboard() {
   const navigate = useNavigate()
-  const me = useMemo(() => db.currentStudent(), [])
+  const [student] = useState(() => getCurrentStudent())
   const [list, setList] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
 
   useEffect(() => {
-    if (!me) {
+    if (!student) {
       navigate('/student-login')
       return
     }
-    setList(db.getAssignmentsForStudent(me))
-  }, [me, navigate])
+    let active = true
+    setLoading(true)
+    getAssignmentsForStudent(student)
+      .then((assignments) => {
+        if (!active) return
+        setList(assignments)
+      })
+      .catch((err) => {
+        if (!active) return
+        setError(err?.message || 'Failed to load assignments')
+      })
+      .finally(() => {
+        if (!active) return
+        setLoading(false)
+      })
+    return () => {
+      active = false
+    }
+  }, [student, navigate])
 
   const onLogout = () => {
-    db.logoutStudent()
-    navigate('/student-login')
+    logoutStudent().finally(() => {
+      navigate('/student-login')
+    })
   }
 
   return (
@@ -25,7 +46,7 @@ export default function StudentDashboard() {
       <div className="container">
         <header className="section-header">
           <h1 className="page-title">Student Dashboard</h1>
-          {me && <p className="muted">Welcome, {me.name} (Roll {me.rollNo})</p>}
+          {student && <p className="muted">Welcome, {student.name} (Roll {student.rollNo})</p>}
         </header>
 
         <article className="card" style={{ marginBottom: 16 }}>
@@ -34,9 +55,12 @@ export default function StudentDashboard() {
           </div>
         </article>
 
+        {loading && <p className="muted">Loading assignments...</p>}
+        {error && <p className="muted" style={{ color: 'crimson' }}>{error}</p>}
+
         <article className="card">
           <h3 style={{ marginTop: 0 }}>Your Assignments</h3>
-          {list.length === 0 && <p className="muted">No assignments yet.</p>}
+          {!loading && list.length === 0 && <p className="muted">No assignments yet.</p>}
           <div className="grid">
             {list.map(a => (
               <div key={a.id} className="card">
@@ -57,7 +81,7 @@ export default function StudentDashboard() {
                   <span className="field-value">{a.teacherName}</span>
                 </p>
                 {(() => {
-                  const sub = db.getSubmissionByAssignmentAndRoll(a.id, me?.rollNo)
+                  const sub = a.submission
                   const pastDue = (() => {
                     try { return new Date() > new Date(`${a.dueDate}T23:59:59`) } catch { return false }
                   })()

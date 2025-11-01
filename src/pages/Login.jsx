@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { db } from '../services/localDb'
+import { loginAdmin } from '../services/firebaseDb'
 
 export default function AdminLogin() {
   const [name, setName] = useState('')
@@ -8,12 +8,15 @@ export default function AdminLogin() {
   const [error, setError] = useState('')
   const navigate = useNavigate()
 
-  const onSubmit = (e) => {
+  const onSubmit = async (e) => {
     e.preventDefault()
     setError('')
-    const adm = db.adminLogin(name, password)
-    if (!adm) { setError('Invalid admin credentials'); return }
-    navigate('/admin-dashboard')
+    try {
+      await loginAdmin({ email: name, password })
+      navigate('/admin-dashboard')
+    } catch (err) {
+      setError(err?.message || 'Invalid admin credentials')
+    }
   }
 
   return (

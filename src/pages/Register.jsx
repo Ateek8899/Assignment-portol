@@ -1,27 +1,96 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { db } from '../services/localDb'
+import { addTeacherRequest, registerStudent } from '../services/firebaseDb'
 
 export default function Register() {
   const navigate = useNavigate()
-  const [form, setForm] = useState({ name: '', email: '', password: '', confirm: '', role: 'student', subject: '', teacherNumber: '', photo: '' })
+  const [form, setForm] = useState({
+    name: '',
+    email: '',
+    password: '',
+    confirm: '',
+    role: 'student',
+    subject: '',
+    teacherNumber: '',
+    photo: '',
+    className: '',
+    semester: '',
+    rollNo: '',
+    phone: ''
+  })
   const [msg, setMsg] = useState('')
+  const [error, setError] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
-  const onSubmit = (e) => {
+  const onSubmit = async (e) => {
     e.preventDefault()
     setMsg('')
-    if (form.role === 'student') {
-      navigate('/student-login')
+    setError('')
+
+    if (!form.name || !form.email || !form.password || !form.confirm) {
+      setError('Fill all required fields')
       return
     }
-    if (!form.name || !form.email || !form.password || !form.confirm || (form.role === 'teacher' && (!form.subject || !form.teacherNumber))) { setMsg('Fill all fields'); return }
-    if (form.password !== form.confirm) { setMsg('Passwords do not match'); return }
+    if (form.password !== form.confirm) {
+      setError('Passwords do not match')
+      return
+    }
+
+    setIsSubmitting(true)
+
+    if (form.role === 'student') {
+      if (!form.className || !form.semester || !form.rollNo || !form.phone) {
+        setError('Please complete all student details')
+        setIsSubmitting(false)
+        return
+      }
+      try {
+        await registerStudent({
+          name: form.name,
+          className: form.className,
+          semester: form.semester,
+          rollNo: form.rollNo,
+          phone: form.phone,
+          email: form.email,
+          password: form.password
+        })
+        navigate('/student-dashboard')
+      } catch (err) {
+        setError(err?.message || 'Failed to register student')
+      } finally {
+        setIsSubmitting(false)
+      }
+      return
+    }
+
+    if (!form.subject || !form.teacherNumber) {
+      setError('Please provide subject and teacher number')
+      setIsSubmitting(false)
+      return
+    }
+
     try {
-      db.addTeacherRequest({ name: form.name, email: form.email, password: form.password, subject: form.subject, teacherNumber: form.teacherNumber, photo: form.photo })
+      await addTeacherRequest({
+        name: form.name,
+        email: form.email,
+        password: form.password,
+        subject: form.subject,
+        teacherNumber: form.teacherNumber,
+        photo: form.photo
+      })
       setMsg('Teacher request submitted. An admin must approve your account before you can log in.')
-      setForm(prev => ({ ...prev, password: '', confirm: '' }))
+      setForm(prev => ({
+        ...prev,
+        password: '',
+        confirm: '',
+        subject: '',
+        teacherNumber: '',
+        photo: ''
+      }))
     } catch (err) {
-      setMsg(err?.message || 'Failed to submit teacher request')
+      setError(err?.message || 'Failed to submit teacher request')
+    } finally {
+      setIsSubmitting(false)
     }
   }
 
@@ -30,6 +99,7 @@ export default function Register() {
       <div className="auth-card">
         <h1 className="auth-title">Create Account</h1>
         <p className="auth-subtitle">Select your role to continue</p>
+        {error && <p className="muted" style={{ color: 'crimson', textAlign: 'center' }}>{error}</p>}
         {msg && <p className="muted" style={{ textAlign: 'center' }}>{msg}</p>}
         <form onSubmit={onSubmit} className="form auth-form">
           <label>
@@ -59,6 +129,36 @@ export default function Register() {
               <input value={form.confirm} onChange={e => setForm({ ...form, confirm: e.target.value })} type="password" required />
             </label>
           </div>
+
+          {form.role === 'student' && (
+            <>
+              <div className="form-row-2">
+                <label>
+                  Degree / Class
+                  <input value={form.className} onChange={e => setForm({ ...form, className: e.target.value })} placeholder="e.g. BSCS" required />
+                </label>
+                <label>
+                  Semester
+                  <select value={form.semester} onChange={e => setForm({ ...form, semester: e.target.value })} required>
+                    <option value="">Select semester</option>
+                    {['1','2','3','4','5','6','7','8'].map((sem) => (
+                      <option key={sem} value={sem}>{sem}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="form-row-2">
+                <label>
+                  Roll Number
+                  <input value={form.rollNo} onChange={e => setForm({ ...form, rollNo: e.target.value })} placeholder="e.g. 20-AR-123" required />
+                </label>
+                <label>
+                  Phone
+                  <input value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} placeholder="e.g. 0300-1234567" required />
+                </label>
+              </div>
+            </>
+          )}
 
           {form.role === 'teacher' && (
             <>
@@ -94,7 +194,7 @@ export default function Register() {
           </label>
 
           <div className="card-actions">
-            <button className="btn btn-pro" type="submit">Continue</button>
+            <button className="btn btn-pro" type="submit" disabled={isSubmitting}>{isSubmitting ? 'Please wait…' : 'Continue'}</button>
             {form.role === 'teacher' && (
               <button type="button" className="btn btn-secondary" onClick={() => navigate('/teacher-login')}>Go to Teacher Login</button>
             )}

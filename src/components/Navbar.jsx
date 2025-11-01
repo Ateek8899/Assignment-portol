@@ -1,10 +1,25 @@
 import { Link, NavLink } from 'react-router-dom'
-import { db } from '../services/localDb'
+import { useEffect, useState } from 'react'
+import { getCurrentStudent, getCurrentTeacher } from '../services/session'
 
 export default function Navbar() {
-  const isStudent = !!db.currentStudent()
-  const isTeacher = !!db.currentTeacher()
-  const isLoggedIn = isStudent || isTeacher
+  const [isLoggedIn, setIsLoggedIn] = useState(() => {
+    const student = getCurrentStudent()
+    const teacher = getCurrentTeacher()
+    return !!student || !!teacher
+  })
+
+  useEffect(() => {
+    const handleStorage = () => {
+      const student = getCurrentStudent()
+      const teacher = getCurrentTeacher()
+      setIsLoggedIn(!!student || !!teacher)
+    }
+
+    window.addEventListener('storage', handleStorage)
+    return () => window.removeEventListener('storage', handleStorage)
+  }, [])
+
   return (
     <header className="nav">
       <div className="nav-bar">

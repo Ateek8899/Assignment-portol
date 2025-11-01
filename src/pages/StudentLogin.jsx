@@ -1,12 +1,19 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { db, getStudents, addStudent } from '../services/localDb'
+import {
+  registerStudent,
+  loginStudent,
+  getSemesterMode,
+  getDegreeRange,
+  resetPassword
+} from '../services/firebaseDb'
+import { getCurrentStudent } from '../services/session'
 
 export default function StudentLogin() {
   const navigate = useNavigate()
   const [mode, setMode] = useState('login') // 'login' | 'register'
   const [error, setError] = useState('')
-  const [message, setMessage] = useState('')   // ✅ Added this line
+  const [message, setMessage] = useState('')   // 
   const [studentName, setStudentName] = useState('')
   const [className, setClassName] = useState('')
   const [rollNo, setRollNo] = useState('')
@@ -20,65 +27,79 @@ export default function StudentLogin() {
   const [fpEmail, setFpEmail] = useState('')
   const [fpPhone, setFpPhone] = useState('')
   const [fpNew, setFpNew] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [semesterMode, setSemesterMode] = useState('odd')
+
+  const semesterOptions = useMemo(() => (
+    semesterMode === 'even' ? ['2', '4', '6', '8'] : ['1', '3', '5', '7']
+  ), [semesterMode])
 
   useEffect(() => {
-    const me = db.currentStudent()
+    const me = getCurrentStudent()
     if (me) navigate('/student-dashboard')
   }, [navigate])
 
+  useEffect(() => {
+    let active = true
+    getSemesterMode()
+      .then((mode) => {
+        if (mode && active) setSemesterMode(mode)
+      })
+      .catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const refreshRangeHint = async (degreeValue, semesterValue) => {
+    try {
+      const result = await getDegreeRange(degreeValue, semesterValue)
+      if (result && result.start && result.end) {
+        setRangeHint(`Your roll number must be between ${result.start} and ${result.end} for ${degreeValue} semester ${semesterValue}`)
+      } else {
+        setRangeHint('')
+      }
+    } catch (err) {
+      console.error('Failed to fetch degree range', err)
+      setRangeHint('')
+    }
+  }
+
   const handleLogin = async (e) => {
     e.preventDefault()
+    setMessage('')
     try {
-      // Get all students from local storage
-      const students = await getStudents()
-      const student = students.find(s => s.email === email && s.password === password)
-      
-      if (student) {
-        // Store user in localStorage
-        localStorage.setItem('currentUser', JSON.stringify({
-          id: student.id,
-          email: student.email,
-          name: student.name,
-          rollNo: student.rollNo,
-          role: 'student'
-        }))
-        
-        navigate('/student-dashboard')
-      } else {
-        setError('Invalid email or password')
-      }
+      setIsSubmitting(true)
+      await loginStudent({ email, password })
+      navigate('/student-dashboard')
     } catch (error) {
-      setError('An error occurred during login')
+      setError(error?.message || 'An error occurred during login')
     }
+    setIsSubmitting(false)
   }
 
   const onSubmit = async (e) => {
     e.preventDefault()
     setError('')
-    if (!studentName || !className || !semester || !rollNo || !phone || !email || !password || !confirmPassword) { setError('Please fill all fields'); return }
-    const rng = db.getDegreeRange?.(className, semester)
-    const rn = Number(rollNo)
-    if (rng && (Number.isNaN(rn) || rn < Number(rng.start) || rn > Number(rng.end))) {
-      setError(`Your roll number must be between ${rng.start} and ${rng.end} for ${className} semester ${semester}`)
-      return
-    }
-    if (password !== confirmPassword) { setError('Passwords do not match'); return }
-    if (db.isRollRegistered(rollNo)) { setError('This roll number is already registered'); return }
-    if (db.isEmailRegistered(email)) { setError('This email is already registered'); return }
+    setMessage('')
+    setIsSubmitting(true)
+    if (!studentName || !className || !semester || !rollNo || !phone || !email || !password || !confirmPassword) { setError('Please fill all fields'); setIsSubmitting(false); return }
+    if (password !== confirmPassword) { setError('Passwords do not match'); setIsSubmitting(false); return }
     try {
-      const student = { name: studentName, className, semester, rollNo, phone, email, password }
-      await addStudent(student)
-      localStorage.setItem('currentUser', JSON.stringify({
-        id: student.id,
-        email: student.email,
-        name: student.name,
-        rollNo: student.rollNo,
-        role: 'student'
-      }))
-      navigate('/student')
+      await registerStudent({
+        name: studentName,
+        className,
+        semester,
+        rollNo,
+        phone,
+        email,
+        password
+      })
+      navigate('/student-dashboard')
     } catch (err) {
-      setError('Failed to register. This email may already be in use.')
+      setError(err?.message || 'Failed to register. This email may already be in use.')
     }
+    setIsSubmitting(false)
   }
 
   const handleResetPassword = () => {
@@ -89,7 +110,11 @@ export default function StudentLogin() {
       return
     }
     
-    setMessage('Password reset functionality is not available in local storage mode. Please contact support.')
+    setIsSubmitting(true)
+    resetPassword(fpEmail)
+      .then(() => setMessage('Password reset email sent. Check your inbox.'))
+      .catch((err) => setError(err?.message || 'Failed to send reset email.'))
+      .finally(() => setIsSubmitting(false))
   }
 
   return (
@@ -125,7 +150,7 @@ export default function StudentLogin() {
               />
             </label>
             <div className="card-actions">
-              <button className="btn btn-pro" type="submit">Login</button>
+              <button className="btn btn-pro" type="submit" disabled={isSubmitting}>Login</button>
               <button className="btn btn-secondary" type="button" onClick={() => { setMode('register'); setError('') }}>New? Register</button>
               <button className="btn btn-light" type="button" onClick={() => { setForgotOpen(true); setError('') }}>Forgot password?</button>
             </div>
@@ -152,8 +177,7 @@ export default function StudentLogin() {
                   onChange={(e) => {
                     const v = e.target.value
                     setClassName(v)
-                    const r = db.getDegreeRange?.(v, semester)
-                    setRangeHint(r ? `Your roll number must be between ${r.start} and ${r.end} for ${v} semester ${semester}` : '')
+                    refreshRangeHint(v, semester)
                   }}
                   required
                 >
@@ -173,11 +197,10 @@ export default function StudentLogin() {
                   const s = e.target.value
                   setSemester(s)
                   if (className) {
-                    const r = db.getDegreeRange?.(className, s)
-                    setRangeHint(r ? `Your roll number must be between ${r.start} and ${r.end} for ${className} semester ${s}` : '')
+                    refreshRangeHint(className, s)
                   }
                 }} required>
-                  {(db.getSemesterMode?.() === 'even' ? ['2','4','6','8'] : ['1','3','5','7']).map(s => (
+                  {semesterOptions.map(s => (
                     <option key={s} value={s}>{s}</option>
                   ))}
                 </select>
@@ -235,14 +258,14 @@ export default function StudentLogin() {
             </div>
 
             <div className="card-actions">
-              <button className="btn btn-pro" type="submit">Continue</button>
+              <button className="btn btn-pro" type="submit" disabled={isSubmitting}>Continue</button>
               <button className="btn btn-secondary" type="button" onClick={() => { setMode('login'); setError('') }}>Already registered? Login</button>
             </div>
           </form>
         )}
 
         <div style={{ marginTop: 12, textAlign: 'center' }}>
-          <button className="btn btn-light" type="button" onClick={() => navigate('/student')}>Go to Dashboard</button>
+          <button className="btn btn-light" type="button" onClick={() => navigate('/student-dashboard')}>Go to Dashboard</button>
         </div>
 
         {forgotOpen && (
