@@ -75,17 +75,40 @@ export default function AdminDashboard() {
 
     const loadData = async () => {
       try {
+        console.log('Starting to load admin dashboard data...');
         const [teachersData, studentsData, assignmentsData] = await Promise.all([
-          getTeachers(),
-          getStudents(),
-          getAssignments(),
+          getTeachers().catch(err => {
+            console.error('Error loading teachers:', err);
+            return [];
+          }),
+          getStudents().catch(err => {
+            console.error('Error loading students:', err);
+            return [];
+          }),
+          getAssignments().catch(err => {
+            console.error('Error loading assignments:', err);
+            return [];
+          }),
         ]);
+        
+        console.log('Teachers loaded:', teachersData?.length || 0);
+        console.log('Students loaded:', studentsData?.length || 0);
+        console.log('Assignments loaded:', assignmentsData?.length || 0);
+        
         setTeachers(teachersData || []);
         setStudents(studentsData || []);
         setAssignments(assignmentsData || []);
+        
+        if ((!teachersData || teachersData.length === 0) && 
+            (!studentsData || studentsData.length === 0) && 
+            (!assignmentsData || assignmentsData.length === 0)) {
+          setError("No data found. Please check your Firebase permissions and data.");
+        } else {
+          setError("");
+        }
       } catch (err) {
-        console.error("Failed to load admin dashboard data", err);
-        setError("Failed to load data");
+        console.error("Failed to load admin dashboard data:", err);
+        setError(`Failed to load data: ${err.message || 'Unknown error'}`);
       } finally {
         setIsLoading(false);
       }

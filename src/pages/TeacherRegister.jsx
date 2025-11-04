@@ -1,16 +1,19 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { registerTeacher, getTeachers } from '../services/firebaseDb';
+import { registerTeacher, findTeacherByEmail } from '../services/firebaseDb';
 import { getCurrentTeacher } from '../services/session';
+import './TeacherDashboard.css';
 
 export default function TeacherRegister() {
-  // Teacher self-registration state
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [phone, setPhone] = useState('');
-  const [subject, setSubject] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
+  const [form, setForm] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    subject: '',
+    password: '',
+    confirmPassword: ''
+  });
+  
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -21,10 +24,20 @@ export default function TeacherRegister() {
     if (me) navigate('/teacher/dashboard');
   }, [navigate]);
 
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setForm(prev => ({
+      ...prev,
+      [name]: value
+    }));
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
     setInfo('');
+
+    const { name, email, phone, subject, password, confirmPassword } = form;
 
     if (!name || !email || !phone || !subject || !password || !confirmPassword) {
       setError('Please fill in all fields');
@@ -36,131 +49,165 @@ export default function TeacherRegister() {
       return;
     }
 
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters long');
+      return;
+    }
+
     try {
       setIsSubmitting(true);
-      const teachers = await getTeachers();
-      if (teachers.some(t => t.email === email)) {
+      
+      // Check if teacher with this email already exists
+      const existingTeacher = await findTeacherByEmail(email);
+      if (existingTeacher) {
         setError('A teacher with this email already exists');
-        setIsSubmitting(false);
         return;
       }
 
+      // Register the teacher
       await registerTeacher({
-        email,
         name,
+        email,
         phone,
         subject,
         password
       });
 
       setInfo('Registration successful! Redirecting to dashboard...');
+      
+      // Redirect to teacher dashboard after successful registration
       setTimeout(() => {
         navigate('/teacher/dashboard');
-      }, 1200);
+      }, 1500);
 
     } catch (error) {
       console.error('Registration error:', error);
       setError(error?.message || 'An error occurred during registration. Please try again.');
+    } finally {
+      setIsSubmitting(false);
     }
-    setIsSubmitting(false);
   };
 
   return (
-    <section className="section auth-section">
-      <div className="container">
-        <div className="auth-card">
-          <h1 className="auth-title">Teacher Registration</h1>
-          <p className="auth-subtitle">Create your teacher account to get started</p>
+    <div className="auth">
+      <div className="auth-card">
+        <h1 className="auth-title">Teacher Registration</h1>
+        <p className="auth-subtitle">Create your teacher account to get started</p>
+        
+        {error && (
+          <div className="alert alert-error">
+            {error}
+          </div>
+        )}
+        
+        {info && (
+          <div className="alert alert-success">
+            {info}
+          </div>
+        )}
+        
+        <form onSubmit={handleSubmit} className="auth-form">
+          <div className="form-group">
+            <label htmlFor="name">Full Name</label>
+            <input
+              id="name"
+              type="text"
+              name="name"
+              value={form.name}
+              onChange={handleChange}
+              placeholder="e.g. Sir Ahmed"
+              required
+            />
+          </div>
           
-          {error && <div className="alert alert-error">{error}</div>}
-          {info && <div className="alert alert-success">{info}</div>}
-          
-          <form onSubmit={handleSubmit} className="form" autoComplete="off">
+          <div className="form-row-2">
             <div className="form-group">
-              <label>Full Name</label>
-              <input 
-                type="text" 
-                value={name} 
-                onChange={e => setName(e.target.value)} 
-                placeholder="e.g. Sir Ahmed" 
-                required 
+              <label htmlFor="email">Email</label>
+              <input
+                id="email"
+                type="email"
+                name="email"
+                value={form.email}
+                onChange={handleChange}
+                placeholder="name@example.com"
+                required
               />
             </div>
             
-            <div className="form-row-2">
-              <div className="form-group">
-                <label>Email</label>
-                <input 
-                  type="email" 
-                  value={email} 
-                  onChange={e => setEmail(e.target.value)} 
-                  placeholder="name@example.com" 
-                  required 
-                />
-              </div>
-              
-              <div className="form-group">
-                <label>Phone</label>
-                <input 
-                  type="tel" 
-                  value={phone} 
-                  onChange={e => setPhone(e.target.value)} 
-                  placeholder="03001234567" 
-                  pattern="^[0-9]{10,14}$" 
-                  required 
-                />
-              </div>
-            </div>
-            
             <div className="form-group">
-              <label>Subject</label>
-              <input 
-                type="text" 
-                value={subject} 
-                onChange={e => setSubject(e.target.value)} 
-                placeholder="e.g. Mathematics" 
-                required 
+              <label htmlFor="phone">Phone</label>
+              <input
+                id="phone"
+                type="tel"
+                name="phone"
+                value={form.phone}
+                onChange={handleChange}
+                placeholder="03001234567"
+                pattern="^[0-9]{10,14}$"
+                required
+              />
+            </div>
+          </div>
+          
+          <div className="form-group">
+            <label htmlFor="subject">Subject</label>
+            <input
+              id="subject"
+              type="text"
+              name="subject"
+              value={form.subject}
+              onChange={handleChange}
+              placeholder="e.g. Mathematics"
+              required
+            />
+          </div>
+          
+          <div className="form-row-2">
+            <div className="form-group">
+              <label htmlFor="password">Password</label>
+              <input
+                id="password"
+                type="password"
+                name="password"
+                value={form.password}
+                onChange={handleChange}
+                placeholder="Create a password"
+                minLength="6"
+                required
               />
             </div>
             
-            <div className="form-row-2">
-              <div className="form-group">
-                <label>Password</label>
-                <input 
-                  type="password" 
-                  value={password} 
-                  onChange={e => setPassword(e.target.value)} 
-                  placeholder="Create a password" 
-                  minLength="6"
-                  required 
-                />
-              </div>
-              
-              <div className="form-group">
-                <label>Confirm Password</label>
-                <input 
-                  type="password" 
-                  value={confirmPassword} 
-                  onChange={e => setConfirmPassword(e.target.value)} 
-                  placeholder="Confirm your password" 
-                  minLength="6"
-                  required 
-                />
-              </div>
+            <div className="form-group">
+              <label htmlFor="confirmPassword">Confirm Password</label>
+              <input
+                id="confirmPassword"
+                type="password"
+                name="confirmPassword"
+                value={form.confirmPassword}
+                onChange={handleChange}
+                placeholder="Confirm your password"
+                minLength="6"
+                required
+              />
             </div>
+          </div>
+          
+          <div className="form-actions">
+            <button 
+              type="submit" 
+              className="btn btn-primary" 
+              disabled={isSubmitting}
+            >
+              {isSubmitting ? 'Registering...' : 'Register'}
+            </button>
             
-            <div className="form-actions">
-              <button type="submit" className="btn btn-primary btn-block" disabled={isSubmitting}>
-                Register
-              </button>
-              
-              <p className="auth-footer">
-                Already have an account? <Link to="/teacher-login">Login here</Link>
-              </p>
-            </div>
-          </form>
-        </div>
+            <p className="auth-footer">
+              Already have an account?{' '}
+              <Link to="/teacher-login">Log in here</Link>
+            </p>
+          </div>
+        </form>
       </div>
-    </section>
+    </div>
   );
 }
