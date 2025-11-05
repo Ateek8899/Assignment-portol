@@ -16,7 +16,7 @@ import {
   setDoc 
 } from "firebase/firestore";
 import { firestore } from "./firebase";
-import { clearSessionUser, setSessionUser } from "./session";
+import { clearSessionUser, setSessionUser, getCurrentTeacher } from "./session";
 
 // ======================
 // Constants (Collections)
@@ -31,9 +31,32 @@ const COLLECTIONS = {
   TEACHER_REQUESTS: "teacherRequests"
 };
 
+// Convenience: allow admin to set roll range by (degree, semester)
+export const setDegreeRange = async (degree, semester, startRoll, endRoll) => {
+  try {
+    const id = semester ? `${degree}-${semester}` : String(degree);
+    return await setClassRollNumberRange(id, startRoll, endRoll);
+  } catch (error) {
+    handleError(error, "Error setting degree roll number range");
+  }
+};
+
+// A virtual admin recipient id used for admin-wide notifications
+const ADMIN_USER_ID = "admin";
+
 // Lightweight student registration used by Register.jsx (no Firebase Auth)
 export const registerStudent = async ({ name, className, semester, rollNo, phone, email, password }) => {
   try {
+    // Validate roll number range if configured for this degree/semester
+    try {
+      const range = await getDegreeRange(className, semester);
+      if (range && (parseInt(rollNo, 10) < range.start || parseInt(rollNo, 10) > range.end)) {
+        throw new Error(`Roll number must be between ${range.start} and ${range.end} for ${className} ${semester}.`);
+      }
+    } catch (e) {
+      if (e && e.message && e.message.startsWith("Roll number")) throw e;
+      // if no settings exist, allow registration silently
+    }
     const profile = {
       role: "student",
       name,
@@ -67,6 +90,28 @@ export const registerTeacher = async ({ name, email, phone, subject, password })
     };
     const ref = await addDoc(collection(firestore, COLLECTIONS.USERS), profile);
     setSessionUser({ id: ref.id, role: "teacher", name, email, phone, subject, status: "pending" });
+    // Also store a teacher request document for admin review (no password persisted)
+    try {
+      await addDoc(collection(firestore, COLLECTIONS.TEACHER_REQUESTS), {
+        teacherId: ref.id,
+        name,
+        email,
+        phone,
+        subject,
+        status: "pending",
+        createdAt: serverTimestamp()
+      });
+    } catch (_) {}
+    // Notify admins about new teacher registration
+    try {
+      await createNotification({
+        userId: ADMIN_USER_ID,
+        title: "New teacher registration",
+        message: `${name} requested approval as a teacher`,
+        type: "teacher_request",
+        meta: { teacherId: ref.id, name, email }
+      });
+    } catch (_) {}
     return { id: ref.id, ...profile };
   } catch (error) {
     handleError(error, "Failed to register teacher");
@@ -81,6 +126,20 @@ const mapDoc = (doc) => ({ id: doc.id, ...doc.data() });
 const handleError = (error, message) => {
   console.error(`${message}:`, error);
   throw new Error(message);
+};
+
+// Simple role check for admin using the users collection
+export const isAdmin = async (userId) => {
+  try {
+    if (!userId) return false;
+    const ref = doc(firestore, COLLECTIONS.USERS, userId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return false;
+    const data = snap.data();
+    return String(data.role).toLowerCase() === "admin";
+  } catch (_) {
+    return false;
+  }
 };
 
 // ======================
@@ -253,6 +312,72 @@ export const updateTeacherStatus = async (teacherId, status) => {
   }
 };
 
+// Admin-only: set teacher status and keep related collections in sync
+export const adminSetTeacherStatus = async (teacherId, status, adminId, reason = "") => {
+  try {
+    if (!(await isAdmin(adminId))) {
+      throw new Error("Only admin can change teacher status.");
+    }
+    const normalized = String(status).toLowerCase();
+    const teacherRef = doc(firestore, COLLECTIONS.USERS, teacherId);
+    const updates = { status: normalized, updatedAt: serverTimestamp() };
+    if (normalized === "approved" || normalized === "active") {
+      updates.approved = true;
+      updates.approvedBy = adminId || null;
+      updates.approvedAt = serverTimestamp();
+      updates.rejectReason = null;
+    } else if (normalized === "rejected") {
+      updates.approved = false;
+      updates.rejectedBy = adminId || null;
+      updates.rejectedAt = serverTimestamp();
+      updates.rejectReason = reason || null;
+    }
+    await updateDoc(teacherRef, updates);
+
+    // Sync teacherRequests
+    try {
+      const rq = query(
+        collection(firestore, COLLECTIONS.TEACHER_REQUESTS),
+        where("teacherId", "==", teacherId)
+      );
+      const rsnap = await getDocs(rq);
+      const reqUpdates = { status: normalized, updatedAt: serverTimestamp() };
+      if (normalized === "approved" || normalized === "active") {
+        reqUpdates.approvedBy = adminId || null;
+        reqUpdates.approvedAt = serverTimestamp();
+      }
+      if (normalized === "rejected") {
+        reqUpdates.rejectedBy = adminId || null;
+        reqUpdates.rejectedAt = serverTimestamp();
+        reqUpdates.rejectReason = reason || null;
+      }
+      await Promise.all(
+        rsnap.docs.map((d) => updateDoc(doc(firestore, COLLECTIONS.TEACHER_REQUESTS, d.id), reqUpdates))
+      );
+    } catch (_) {}
+
+    // Notify teacher of status change
+    try {
+      let title = "Account status updated";
+      let message = `Your teacher account status changed to ${normalized}.`;
+      let type = `teacher_${normalized}`;
+      if (normalized === "rejected" && reason) {
+        message = `Your teacher registration was rejected: ${reason}`;
+      }
+      if (normalized === "approved" || normalized === "active") {
+        title = "Teacher account approved";
+        message = "Your teacher registration has been approved by admin.";
+        type = "teacher_approved";
+      }
+      await createNotification({ userId: teacherId, title, message, type, meta: { changedBy: adminId || null } });
+    } catch (_) {}
+
+    return { id: teacherId, status: normalized };
+  } catch (error) {
+    handleError(error, `Error setting teacher status to ${status}`);
+  }
+};
+
 // ======================
 // Assignment Management
 // ======================
@@ -341,19 +466,47 @@ export const addSubmission = async (submissionData) => {
   return submitAssignment(submissionData);
 };
 
-export const getAssignmentsForStudent = async (studentId) => {
-  const q = query(
-    collection(firestore, "assignments"),
-    where("studentId", "==", studentId)
-  );
-
-  const querySnapshot = await getDocs(q);
-  const assignments = [];
-  querySnapshot.forEach((doc) => {
-    assignments.push({ id: doc.id, ...doc.data() });
-  });
-
-  return assignments;
+export const getAssignmentsForStudent = async (student) => {
+  try {
+    if (!student) return [];
+    const degree = student.className || student.degree || student.course;
+    const sem = String(student.semester ?? "");
+    if (!degree || !sem) return [];
+    const col = collection(firestore, COLLECTIONS.ASSIGNMENTS);
+    // Try compound query (may require composite index)
+    try {
+      let qy;
+      try {
+        qy = query(
+          col,
+          where("classOrCourse", "==", degree),
+          where("semester", "==", sem),
+          orderBy("createdAt", "desc")
+        );
+      } catch (_) {
+        qy = query(
+          col,
+          where("classOrCourse", "==", degree),
+          where("semester", "==", sem)
+        );
+      }
+      const snap = await getDocs(qy);
+      return snap.docs.map(mapDoc);
+    } catch (_) {
+      // Fallback: single-field query and filter locally (no composite index needed)
+      try {
+        const qy2 = query(col, where("classOrCourse", "==", degree));
+        const snap2 = await getDocs(qy2);
+        return snap2.docs.map(mapDoc).filter(a => String(a.semester) === sem);
+      } catch (__) {
+        // Last resort: load all and filter (avoid if collection is huge)
+        const snap3 = await getDocs(col);
+        return snap3.docs.map(mapDoc).filter(a => a.classOrCourse === degree && String(a.semester) === sem);
+      }
+    }
+  } catch (error) {
+    handleError(error, "Error fetching assignments for student");
+  }
 };
 // ======================
 // Notification System
@@ -368,6 +521,20 @@ export const createNotification = async (notificationData) => {
     return { id: notificationRef.id, ...notificationData };
   } catch (error) {
     handleError(error, "Error creating notification");
+  }
+};
+
+export const getAdminNotifications = async () => {
+  try {
+    const qy = query(
+      collection(firestore, COLLECTIONS.NOTIFICATIONS),
+      where("userId", "==", ADMIN_USER_ID),
+      orderBy("createdAt", "desc")
+    );
+    const snap = await getDocs(qy);
+    return snap.docs.map(mapDoc);
+  } catch (error) {
+    handleError(error, "Error fetching admin notifications");
   }
 };
 
@@ -483,6 +650,12 @@ export const loginTeacher = async ({ email, password }) => {
     const docSnap = snap.docs[0];
     if (!docSnap) throw new Error("Teacher not found");
     const user = mapDoc(docSnap);
+    if (user.status === "pending") {
+      throw new Error("Your account is pending admin approval.");
+    }
+    if (user.status === "rejected") {
+      throw new Error("Your teacher registration was rejected.");
+    }
     setSessionUser({
       id: user.id,
       role: "teacher",
@@ -532,6 +705,10 @@ export const logoutAdmin = async () => {
 // ======================
 export const approveTeacher = async (teacherId, adminId) => {
   try {
+    // Enforce that only admins can approve
+    if (!(await isAdmin(adminId))) {
+      throw new Error("Only admin can approve teacher accounts.");
+    }
     const teacherRef = doc(firestore, COLLECTIONS.USERS, teacherId);
     await updateDoc(teacherRef, {
       status: "approved",
@@ -540,6 +717,32 @@ export const approveTeacher = async (teacherId, adminId) => {
       approvedAt: serverTimestamp(),
       updatedAt: serverTimestamp()
     });
+    // Sync teacherRequests status if present
+    try {
+      const rq = query(
+        collection(firestore, COLLECTIONS.TEACHER_REQUESTS),
+        where("teacherId", "==", teacherId)
+      );
+      const rsnap = await getDocs(rq);
+      await Promise.all(
+        rsnap.docs.map((d) => updateDoc(doc(firestore, COLLECTIONS.TEACHER_REQUESTS, d.id), {
+          status: "approved",
+          approvedBy: adminId || null,
+          approvedAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        }))
+      );
+    } catch (_) {}
+    // Notify teacher of approval
+    try {
+      await createNotification({
+        userId: teacherId,
+        title: "Teacher account approved",
+        message: "Your teacher registration has been approved by admin.",
+        type: "teacher_approved",
+        meta: { approvedBy: adminId || null }
+      });
+    } catch (_) {}
     return { id: teacherId, status: "approved" };
   } catch (error) {
     handleError(error, "Error approving teacher");
@@ -548,6 +751,10 @@ export const approveTeacher = async (teacherId, adminId) => {
 
 export const rejectTeacher = async (teacherId, adminId, reason = "") => {
   try {
+    // Enforce that only admins can reject
+    if (!(await isAdmin(adminId))) {
+      throw new Error("Only admin can reject teacher accounts.");
+    }
     const teacherRef = doc(firestore, COLLECTIONS.USERS, teacherId);
     await updateDoc(teacherRef, {
       status: "rejected",
@@ -557,6 +764,33 @@ export const rejectTeacher = async (teacherId, adminId, reason = "") => {
       rejectReason: reason || null,
       updatedAt: serverTimestamp()
     });
+    // Sync teacherRequests status if present
+    try {
+      const rq = query(
+        collection(firestore, COLLECTIONS.TEACHER_REQUESTS),
+        where("teacherId", "==", teacherId)
+      );
+      const rsnap = await getDocs(rq);
+      await Promise.all(
+        rsnap.docs.map((d) => updateDoc(doc(firestore, COLLECTIONS.TEACHER_REQUESTS, d.id), {
+          status: "rejected",
+          rejectedBy: adminId || null,
+          rejectedAt: serverTimestamp(),
+          rejectReason: reason || null,
+          updatedAt: serverTimestamp()
+        }))
+      );
+    } catch (_) {}
+    // Notify teacher of rejection
+    try {
+      await createNotification({
+        userId: teacherId,
+        title: "Teacher account rejected",
+        message: reason ? `Your teacher registration was rejected: ${reason}` : "Your teacher registration was rejected.",
+        type: "teacher_rejected",
+        meta: { rejectedBy: adminId || null }
+      });
+    } catch (_) {}
     return { id: teacherId, status: "rejected" };
   } catch (error) {
     handleError(error, "Error rejecting teacher");
@@ -566,11 +800,8 @@ export const rejectTeacher = async (teacherId, adminId, reason = "") => {
 
 export const logoutStudent = async () => {
   try {
-    await signOut(auth);
-    console.log("Student logged out successfully");
-  } catch (error) {
-    console.error("Error logging out student:", error);
-  }
+    clearSessionUser();
+  } catch (_) {}
 };
 // ======================
 // Compatibility Aliases (used by TeacherGrading.jsx)
@@ -579,7 +810,13 @@ export const getTeacherAssignments = getAssignmentsByTeacher;
 export const updateSubmissionGrade = gradeSubmission;
 export const getStudentById = getUserById;
 
-export const currentTeacher = () => null;
+export const currentTeacher = () => {
+  try {
+    return getCurrentTeacher();
+  } catch (_) {
+    return null;
+  }
+};
 export const findTeacherByEmail = async (email) => {
   try {
     const qy = query(
@@ -606,8 +843,25 @@ export const findTeacherByPhone = async (phone) => {
     handleError(error, "Error finding teacher by phone");
   }
 };
-export const getAssignmentsByTeacherIdentity = async (identity) => [];
-export const getAdminMessages = async () => [];
+export const getAssignmentsByTeacherIdentity = async (identity) => {
+  try {
+    if (!identity) return [];
+    const col = collection(firestore, COLLECTIONS.ASSIGNMENTS);
+    const queries = [
+      query(col, where("teacherId", "==", identity)),
+      query(col, where("teacherEmail", "==", identity)),
+      query(col, where("teacherPhone", "==", identity))
+    ];
+    const results = await Promise.all(queries.map((qy) => getDocs(qy).catch(() => null)));
+    const docs = (results.filter(Boolean).flatMap((snap) => snap.docs) || []);
+    const unique = new Map();
+    for (const d of docs) unique.set(d.id, mapDoc(d));
+    return Array.from(unique.values());
+  } catch (error) {
+    handleError(error, "Error fetching assignments by teacher identity");
+  }
+};
+export const getAdminMessages = async () => getAdminNotifications();
 export const getSemesterMode = async () => "odd";
 export const addAssignment = async (assignmentData) => {
   return createAssignment(assignmentData);
@@ -644,6 +898,7 @@ setClassRollNumberRange,
 getClassRollNumberRange,
 getAllClassSettings,
 getDegreeRange,
+setDegreeRange,
 deleteClassSettings,
 
 // Teacher Approval
@@ -652,6 +907,7 @@ updateTeacherStatus,
 approveTeacher,
 rejectTeacher,
 addTeacherRequest,
+adminSetTeacherStatus,
 
 // Assignment Management
 createAssignment,
@@ -673,6 +929,7 @@ updateSubmission,
 createNotification,
 getUserNotifications,
 markNotificationAsRead,
+getAdminNotifications,
 
 // Admin Dashboard helpers
 getTeachers,
@@ -691,5 +948,6 @@ getSemesterMode,
 getStudentById,
 findTeacherByEmail,
 findTeacherByPhone,
-currentTeacher
+currentTeacher,
+isAdmin
 };
