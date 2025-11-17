@@ -2,8 +2,6 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   currentTeacher,
-  findTeacherByEmail,
-  findTeacherByPhone,
   getAssignmentsByTeacherIdentity,
   getAdminMessages,
   getSemesterMode,
@@ -17,86 +15,98 @@ import {
 export default function TeacherDashboard() {
   const navigate = useNavigate()
   const me = useMemo(() => currentTeacher(), [])
-  const [profile, setProfile] = useState(me || null)
-  const [teacherName, setTeacherName] = useState(me?.name || '')
+  const [profile] = useState(me || null)
+
+  const [teacherName] = useState(me?.name || '')
   const [subject, setSubject] = useState('')
   const [assignDate, setAssignDate] = useState('')
   const [dueDate, setDueDate] = useState('')
   const [description, setDescription] = useState('')
+
   const [assignments, setAssignments] = useState([])
-  const [course, setCourse] = useState('BSCS')
+  const [filteredAssignments, setFilteredAssignments] = useState([])
+
+  // Initialize course state with the first available option
+  const [course, setCourse] = useState('BSIT')
   const [semester, setSemester] = useState('1')
+  const [filterSemester, setFilterSemester] = useState('all')
+
   const [messages, setMessages] = useState([])
-  const [selected, setSelected] = useState(null) // { assignment, submission }
+  const [selected, setSelected] = useState(null)
+
   const [loadingAssignments, setLoadingAssignments] = useState(true)
   const [loadingMessages, setLoadingMessages] = useState(true)
+
   const [semesterMode, setSemesterMode] = useState('odd')
-  const [assignmentsError, setAssignmentsError] = useState('')
-  const [messagesError, setMessagesError] = useState('')
+
   const [formError, setFormError] = useState('')
   const [formSuccess, setFormSuccess] = useState('')
-  const [isSaving, setIsSaving] = useState(false)
-  const myIdentity = (me?.email || me?.phone || me?.id) || ''
+
+  const myIdentity = me?.email || me?.phone || me?.id || ''
+
   const semesterOptions = useMemo(() => (
-    semesterMode === 'even' ? ['2','4','6','8'] : ['1','3','5','7']
+    semesterMode === 'even' ? ['2', '4', '6', '8'] : ['1', '3', '5', '7']
   ), [semesterMode])
+
+  const allSemesterOptions = ['1','2','3','4','5','6','7','8']
 
   // Redirect if not logged in
   useEffect(() => {
     if (!me) navigate('/teacher-login')
   }, [me, navigate])
 
+  // Load assignments + submissions
   useEffect(() => {
-    if (!me) {
-      setAssignments([])
-      return
-    }
-    const identity = me.email || me.phone || me.id
-    let active = true
-    setAssignmentsError('')
-    setLoadingAssignments(true)
-    getAssignmentsByTeacherIdentity(identity)
-      .then(async (items = []) => {
-        if (!active) return
-        const withSubmissions = await Promise.all(items.map(async (assignment) => {
-          const submissions = await getSubmissionsByAssignment(assignment.id)
-          return { ...assignment, submissions }
-        }))
-        setAssignments(withSubmissions)
-      })
-      .catch((err) => {
-        if (!active) return
-        setAssignmentsError(err?.message || 'Failed to load assignments')
-        setAssignments([])
-      })
-      .finally(() => {
-        if (!active) return
-        setLoadingAssignments(false)
-      })
-    return () => {
-      active = false
-    }
-  }, [me])
+    if (!me) return
 
-  // Load admin messages for this teacher
+    setLoadingAssignments(true)
+    const identity = me.email || me.phone || me.id
+
+    getAssignmentsByTeacherIdentity(identity)
+      .then(async list => {
+        const processed = await Promise.all(
+          list.map(async a => {
+            const subs = await getSubmissionsByAssignment(a.id)
+            return {
+              ...a,
+              submissions: subs,
+              submissionCount: subs.length,
+              pendingCount: subs.filter(s => !s.grade).length
+            }
+          })
+        )
+
+        setAssignments(processed)
+
+        if (filterSemester !== 'all') {
+          setFilteredAssignments(processed.filter(a => a.semester === filterSemester))
+        } else {
+          setFilteredAssignments(processed)
+        }
+      })
+      .finally(() => setLoadingAssignments(false))
+  }, [me, filterSemester])
+
+  // Load admin messages
   const loadMessages = () => {
     if (!me) return
-    setMessagesError('')
+
     setLoadingMessages(true)
-    getAdminMessages()?.then(all => {
-      const mine = (all || []).filter(m => (
-        m.to === 'all' ||
-        (m.to === 'teacher' && String(m.phone) === String(me.phone)) ||
-        (m.to === 'teacherEmail' && String(m.email || '').toLowerCase() === String(me.email || '').toLowerCase())
-      ))
-      setMessages(mine)
-    }).catch((err) => {
-      setMessagesError(err?.message || 'Failed to load admin messages')
-    }).finally(() => setLoadingMessages(false))
+    getAdminMessages()
+      .then(all => {
+        const mine = all.filter(m =>
+          m.to === 'all' ||
+          (m.to === 'teacher' && m.phone === me.phone) ||
+          (m.to === 'teacherEmail' && String(m.email).toLowerCase() === String(me.email).toLowerCase())
+        )
+        setMessages(mine)
+      })
+      .finally(() => setLoadingMessages(false))
   }
+
   useEffect(() => { loadMessages() }, [me])
 
-  // Auto-fill assignment date with today's date
+  // Auto set today's date
   useEffect(() => {
     if (!assignDate) {
       const today = new Date().toISOString().slice(0, 10)
@@ -104,52 +114,50 @@ export default function TeacherDashboard() {
     }
   }, [assignDate])
 
-  // Ensure semester aligns with admin mode options
+  // Load semester mode
   useEffect(() => {
-    let active = true
-    getSemesterMode().then(mode => {
-      if (!active) return
-      if (mode) setSemesterMode(mode)
-    }).catch(() => {})
-    return () => {
-      active = false
-    }
+    getSemesterMode().then(mode => mode && setSemesterMode(mode))
   }, [])
 
+  // Fix semester if not allowed
   useEffect(() => {
-    const opts = semesterOptions
-    if (!opts.includes(String(semester))) setSemester(opts[0])
+    if (!semesterOptions.includes(String(semester))) {
+      setSemester(semesterOptions[0])
+    }
   }, [semesterOptions, semester])
 
   const onCreate = async (e) => {
     e.preventDefault()
-    if (!me) return
+
     setFormError('')
     setFormSuccess('')
-    setIsSaving(true)
+
     try {
-      const record = await addAssignment({
+      // Ensure course is in uppercase for consistency
+      const normalizedCourse = course ? course.toUpperCase() : 'BSIT';
+      
+      const newRecord = await addAssignment({
         teacherId: me.id,
         teacherName,
         teacherEmail: me.email,
         teacherPhone: me.phone,
         subject,
-        classOrCourse: course,
-        semester,
+        classOrCourse: normalizedCourse,
+        semester: String(semester || '1'),
         assignDate,
         dueDate,
         description
       })
-      setAssignments(prev => [{ ...record, submissions: [] }, ...prev])
+
+      setAssignments(prev => [{...newRecord, submissions: []}, ...prev])
       setSubject('')
       setAssignDate('')
       setDueDate('')
       setDescription('')
       setFormSuccess('Assignment created successfully')
     } catch (err) {
-      setFormError(err?.message || 'Failed to create assignment')
+      setFormError(err.message || 'Failed to create assignment')
     }
-    setIsSaving(false)
   }
 
   const onLogout = () => {
@@ -158,289 +166,198 @@ export default function TeacherDashboard() {
 
   return (
     <section className="section dashboard teacher">
+
+      {/* ---------- HEADER ---------- */}
       <div className="teacher-hero full-bleed">
         <div className="container" style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
           {profile?.photo && (
-            <img src={profile.photo} alt={profile.name} style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: '50%', border: '2px solid rgba(255,255,255,0.5)' }} />
+            <img
+              src={profile.photo}
+              alt={profile.name}
+              style={{ width: 64, height: 64, borderRadius: '50%' }}
+            />
           )}
           <div>
-            <h1 className="page-title" style={{ color: '#fff', margin: 0 }}>Teacher Dashboard</h1>
-            {profile && (
-              <p className="muted" style={{ color: '#e5e7eb', margin: 0 }}>
-                Welcome, {profile.name}{profile.subject ? ` • ${profile.subject}` : ''}{profile.email ? ` • ${profile.email}` : ''}
-              </p>
-            )}
+            <h1 className="page-title" style={{ color: '#fff' }}>Teacher Dashboard</h1>
+            <p style={{ color: '#eee' }}>
+              Welcome, {profile?.name} • {profile?.email}
+            </p>
           </div>
         </div>
       </div>
 
-      {messages.length > 0 && (
-        <div className="container" style={{ marginTop: 16 }}>
-          <article className="card" style={{ background: '#fff7ed', borderColor: '#fed7aa' }}>
-            <h3 style={{ marginTop: 0 }}>Admin Messages</h3>
-            <div className="grid">
-              {messages.map(m => {
-                const acks = Array.isArray(m.acks) ? m.acks : []
-                const alreadyAcked = myIdentity && acks.includes(String(myIdentity))
-                return (
-                  <div key={m.id} className="card" style={{ background: '#ffffff' }}>
-                    <div className="card-header">
-                      <strong>From Admin</strong>
-                      <span className="badge">{m.createdAt ? new Date(m.createdAt).toLocaleString() : '—'}</span>
-                    </div>
-                    <p className="muted">{m.message}</p>
-                    <div className="card-actions" style={{ display: 'flex', gap: 8 }}>
-                      <button
-                        className="btn"
-                        disabled={alreadyAcked}
-                        onClick={() => {
-                          ackAdminMessage(m.id, myIdentity).finally(() => loadMessages())
-                        }}
-                      >
-                        {alreadyAcked ? 'Acknowledged' : 'OK'}
-                      </button>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </article>
-        </div>
-      )}
-
+      {/* ---------- CREATE ASSIGNMENT ---------- */}
       <div className="teacher-form-section full-bleed">
         <div className="container">
-          <header className="section-header">
-            <h2 className="page-title">Create Assignment</h2>
-          </header>
 
-          <article className="card teacher-form-card" style={{ marginBottom: 16 }}>
+          <article className="card teacher-form-card">
             <form className="form" onSubmit={onCreate}>
+
               <label>
-                Subject Name
-                <input
-                  value={subject}
-                  onChange={e => setSubject(e.target.value)}
-                  required
-                  placeholder="e.g. Mathematics"
-                />
+                Subject
+                <input value={subject} onChange={e => setSubject(e.target.value)} required />
               </label>
 
               <label>
-                Degree
-                <select value={course} onChange={e => setCourse(e.target.value)} required>
-                  <option>BSCS</option>
-                  <option>BSIT</option>
-                  <option>BSCE</option>
+                Class/Course
+                <select 
+                  value={course} 
+                  onChange={e => setCourse(e.target.value)}
+                  required
+                >
+                  <option value="BSIT">BSIT</option>
+                  <option value="BSCS">BSCS</option>
                 </select>
               </label>
 
-              <div className="grid" style={{ gridTemplateColumns: 'repeat(1, minmax(0, 1fr))', gap: 12 }}>
-                <label>
-                  Semester
-                  <select value={semester} onChange={e => setSemester(e.target.value)} required>
-                    {semesterOptions.map(s => (
-                      <option key={s} value={s}>{s}</option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-
               <label>
-                Teacher Name
-                <input value={teacherName} readOnly />
+                Semester
+                <select value={semester} onChange={e => setSemester(e.target.value)}>
+                  {semesterOptions.map(s => <option key={s}>{s}</option>)}
+                </select>
               </label>
 
               <label>
                 Assignment Date
-                <input
-                  type="date"
-                  value={assignDate}
-                  onChange={e => setAssignDate(e.target.value)}
-                  required
-                />
+                <input type="date" value={assignDate} onChange={e => setAssignDate(e.target.value)} required />
               </label>
 
               <label>
                 Due Date
-                <input
-                  type="date"
-                  value={dueDate}
-                  onChange={e => setDueDate(e.target.value)}
-                  required
-                />
+                <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} required />
               </label>
 
               <label>
                 Description
-                <input
-                  value={description}
-                  onChange={e => setDescription(e.target.value)}
-                  required
-                  placeholder="Write assignment task"
-                />
+                <input value={description} onChange={e => setDescription(e.target.value)} required />
               </label>
 
               <div className="card-actions">
-                <button className="btn btn-pro" type="submit">Save Assignment</button>
+                <button className="btn btn-pro">Save Assignment</button>
                 <button type="button" className="btn btn-secondary" onClick={onLogout}>Logout</button>
               </div>
+
             </form>
           </article>
+
         </div>
       </div>
 
+      {/* ---------- ASSIGNMENT LIST ---------- */}
       <article className="card">
-        <h3 style={{ marginTop: 0 }}>Your Assignments</h3>
-        {assignments.length === 0 && <p className="muted">No assignments yet.</p>}
-        <div className="grid">
-          {assignments.map(a => (
-            <div key={a.id} className="card">
-              <div className="card-header">
-                <strong className="subject-title">{a.subject}</strong>
-                <span className="badge">Due: {a.dueDate}</span>
-              </div>
-              {a.classOrCourse && (
-                <p>
-                  <span className="field-label">Class/Course:</span>
-                  <span className="field-value">{a.classOrCourse}</span>
-                </p>
-              )}
-              <p>
-                <span className="field-label">Teacher:</span>
-                <span className="field-value">{a.teacherName}</span>
-              </p>
-              <p>
-                <span className="field-label">Assigned:</span>
-                <span className="field-value">{a.assignDate}</span>
-              </p>
-              <p>
-                <span className="field-label">Description:</span>
-                <span className="field-value">{a.description}</span>
-              </p>
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <h3>Your Assignments</h3>
 
-              {a.assignedTo?.rollNo != null && (
-                <p>
-                  <span className="field-label">To Roll:</span>
-                  <span className="field-value">{a.assignedTo.rollNo}</span>
-                </p>
-              )}
-              {a.assignedTo?.rollRange && (
-                <p>
-                  <span className="field-label">To Roll Range:</span>
-                  <span className="field-value">{a.assignedTo.rollRange.start} - {a.assignedTo.rollRange.end}</span>
-                </p>
-              )}
+          <label>
+            Filter semester:
+            <select value={filterSemester} onChange={e => setFilterSemester(e.target.value)}>
+              <option value="all">All</option>
+              {allSemesterOptions.map(s => (
+                <option key={s} value={s}>Semester {s}</option>
+              ))}
+            </select>
+          </label>
+        </div>
 
-              <p>
-                <span className="field-label">Submissions:</span>
-                <span className="field-value">{a.submissions?.length ?? 0}</span>
-              </p>
+        {loadingAssignments ? (
+          <p>Loading...</p>
+        ) : filteredAssignments.length === 0 ? (
+          <p>No assignments found.</p>
+        ) : (
+          <div className="grid">
+            {filteredAssignments.map(a => (
+              <div key={a.id} className="card">
+                <strong>{a.subject}</strong>
+                <p>Due: {a.dueDate}</p>
+                <p>Submissions: {a.submissions.length}</p>
 
-              {a.submissions?.length > 0 && (
-                <div style={{ marginTop: 8 }}>
-                  <h4 style={{ margin: '8px 0' }}>Submissions</h4>
-                  <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}>
+                {a.submissions.length > 0 && (
+                  <div className="grid">
                     {a.submissions.map(s => (
-                      <button
-                        key={s.id}
-                        className="card"
-                        style={{ textAlign: 'left', cursor: 'pointer' }}
-                        onClick={() => setSelected({ assignment: a, submission: s })}
-                      >
-                        <div className="card-header">
-                          <strong>{s.student.name}</strong>
-                          <span className="badge">Roll: {s.student.rollNo}</span>
-                        </div>
-                        <p className="muted">Click to view record</p>
+                      <button key={s.id} className="card" onClick={() => setSelected({ assignment: a, submission: s })}>
+                        <strong>{s.student.name}</strong>
+                        <p>Roll: {s.student.rollNo}</p>
+                        <p>Click to view</p>
                       </button>
                     ))}
                   </div>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </article>
+
+      {/* ---------- SUBMISSION MODAL ---------- */}
       {selected && (
         <div className="center-overlay" onClick={() => setSelected(null)}>
           <div className="center-card" onClick={e => e.stopPropagation()}>
-            <h3 className="page-title" style={{ margin: 0 }}>Student Record</h3>
-            <p className="muted">Assignment: {selected.assignment.subject} • Due {selected.assignment.dueDate}</p>
+
+            <h3>Student Record</h3>
+            <p>
+              Assignment: {selected.assignment.subject} • Due {selected.assignment.dueDate}
+            </p>
+
             <div className="grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
               <div>
-                <h4 style={{ marginTop: 0 }}>Student</h4>
-                <p><span className="field-label">Name:</span><span className="field-value">{selected.submission.student.name}</span></p>
-                <p><span className="field-label">Roll:</span><span className="field-value">{selected.submission.student.rollNo}</span></p>
-                <p><span className="field-label">Class:</span><span className="field-value">{selected.submission.student.className}</span></p>
-                <p><span className="field-label">Phone:</span><span className="field-value">{selected.submission.student.phone}</span></p>
+                <h4>Student Info</h4>
+                <p>Name: {selected.submission.student.name}</p>
+                <p>Roll: {selected.submission.student.rollNo}</p>
+                <p>Class: {selected.submission.student.className}</p>
               </div>
+
               <div>
-                <h4 style={{ marginTop: 0 }}>Submission</h4>
-                <p><span className="field-label">File:</span><span className="field-value">{selected.submission.fileName}</span></p>
-                <p><span className="field-label">Submitted:</span><span className="field-value">{selected.submission.submittedAt ? new Date(selected.submission.submittedAt).toLocaleString() : '—'}</span></p>
-                {selected.submission.description && <p className="muted">Note: {selected.submission.description}</p>}
-                {/* Inline preview */}
+                <h4>Submission</h4>
+                <p>File: {selected.submission.fileName}</p>
+                <p>Submitted: {new Date(selected.submission.submittedAt).toLocaleString()}</p>
+
+                {/* Preview */}
                 {(() => {
-                  const mt = String(selected.submission.mimeType || '').toLowerCase()
+                  const mt = selected.submission.mimeType?.toLowerCase() || ''
+
                   if (mt.includes('pdf')) {
-                    return (
-                      <iframe title="preview" src={selected.submission.dataUrl} style={{ width: '100%', height: 360, border: '1px solid var(--card-border)', borderRadius: 8 }} />
-                    )
+                    return <iframe src={selected.submission.dataUrl} style={{ width: '100%', height: 360 }} />
                   }
+
                   if (mt.startsWith('image/')) {
-                    return (
-                      <img src={selected.s.dataUrl} alt={selected.s.fileName} style={{ maxWidth: '100%', maxHeight: 360, borderRadius: 8, border: '1px solid var(--card-border)' }} />
-                    )
+                    return <img src={selected.submission.dataUrl} style={{ maxWidth: '100%', maxHeight: 360 }} />
                   }
+
                   return (
-                    <div className="card-actions" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                      <a className="btn" href={selected.s.dataUrl} target="_blank" rel="noreferrer">Open</a>
-                      <a className="btn" href={selected.s.dataUrl} download={selected.s.fileName}>Download</a>
-                    </div>
+                    <a className="btn" href={selected.submission.dataUrl} target="_blank" rel="noreferrer">
+                      Open File
+                    </a>
                   )
                 })()}
 
-                <div className="card-actions" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
-                  {(() => {
-                    const due = new Date(`${selected.a.dueDate}T23:59:59`)
-                    const sub = new Date(selected.s.submittedAt)
-                    const late = sub > due
-                    return (
-                      <>
-                        <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <span className="field-label">Grade</span>
-                          <select
-                            value={selected.s.grade ?? ''}
-                            onChange={e => {
-                              const val = e.target.value || null
-                              db.updateSubmission(selected.s.id, { grade: val })
-                              setList(prev => [...prev])
-                              setSelected(prev => prev ? { ...prev, s: { ...prev.s, grade: val } } : prev)
-                            }}
-                            disabled={late}
-                          >
-                            <option value="">— Select —</option>
-                            <option value="A">A</option>
-                            <option value="B">B</option>
-                            <option value="C">C</option>
-                            <option value="D">D</option>
-                            <option value="F">F</option>
-                          </select>
-                        </label>
-                        <span className="badge" title={late ? 'Late' : 'On-time'}>{late ? 'Late' : 'On-time'}</span>
-                      </>
-                    )
-                  })()}
-                </div>
+                {/* Grade */}
+                <label style={{ marginTop: 10 }}>
+                  Grade:
+                  <select
+                    value={selected.submission.grade || ''}
+                    onChange={async e => {
+                      const value = e.target.value || null
+                      await updateSubmission(selected.submission.id, { grade: value })
+                      setSelected(prev => ({ ...prev, submission: { ...prev.submission, grade: value } }))
+                    }}
+                  >
+                    <option value="">Select</option>
+                    <option>A</option>
+                    <option>B</option>
+                    <option>C</option>
+                    <option>D</option>
+                    <option>F</option>
+                  </select>
+                </label>
+
               </div>
             </div>
-            <div className="card-actions" style={{ marginTop: 12, textAlign: 'right' }}>
-              <button className="btn btn-secondary" onClick={() => setSelected(null)}>Close</button>
-            </div>
+
+            <button className="btn btn-secondary" onClick={() => setSelected(null)}>Close</button>
           </div>
         </div>
       )}
+
     </section>
   )
 }

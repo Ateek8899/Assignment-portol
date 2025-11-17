@@ -135,7 +135,10 @@ export default function Register() {
               <div className="form-row-2">
                 <label>
                   Degree / Class
-                  <input value={form.className} onChange={e => setForm({ ...form, className: e.target.value })} placeholder="e.g. BSCS" required />
+                  <select value={form.className} onChange={e => setForm({ ...form, className: e.target.value })} required>
+                    <option value="">Select degree</option>
+                    <option value="BSIT">BSIT</option>
+                  </select>
                 </label>
                 <label>
                   Semester

@@ -276,6 +276,10 @@ export async function addAssignment({
   dueDate,
   description
 }) {
+  // Ensure consistent course naming (uppercase)
+  const normalizedCourse = classOrCourse ? classOrCourse.toUpperCase() : 'BSIT';
+  const normalizedSemester = String(semester || '1');
+  
   const docRef = await addDoc(collection(firestore, ASSIGNMENTS_COLLECTION), {
     teacherId,
     teacherName,
@@ -283,9 +287,10 @@ export async function addAssignment({
     teacherPhone,
     teacherIdentifier: teacherEmail || teacherPhone || teacherId,
     subject,
-    classOrCourse,
-    assignedDegree: classOrCourse,
-    assignedSemester: semester,
+    classOrCourse: normalizedCourse,
+    assignedDegree: normalizedCourse, // For backward compatibility
+    semester: normalizedSemester,     // Store semester as string
+    assignedSemester: normalizedSemester, // For backward compatibility
     assignDate,
     dueDate,
     description,
@@ -367,23 +372,47 @@ export async function updateSubmission(submissionId, data) {
 
 export async function getAssignmentsForStudent(student) {
   if (!student) return []
+  
+  // Normalize student's class name and semester to match assignment format
+  const studentClass = student.className ? student.className.toUpperCase() : null
+  const studentSemester = student.semester ? String(student.semester) : null
+  
+  if (!studentClass || !studentSemester) {
+    console.warn('Student is missing class or semester information')
+    return []
+  }
+  
   const ref = collection(firestore, ASSIGNMENTS_COLLECTION)
-  const filters = []
-  if (student.className) {
-    filters.push(where('assignedDegree', '==', student.className))
+  
+  // Create a query that matches both class and semester
+  const q = query(
+    ref,
+    where('classOrCourse', '==', studentClass),
+    where('semester', '==', studentSemester)
+  )
+  
+  try {
+    const snap = await getDocs(q)
+    const assignments = []
+    
+    // Process each assignment and check for submissions
+    for (const doc of snap.docs) {
+      const assignment = mapDoc(doc)
+      const submission = await getSubmissionByAssignmentAndStudent({ 
+        assignmentId: assignment.id, 
+        studentId: student.id 
+      })
+      assignments.push({ ...assignment, submission })
+    }
+    
+    // Sort assignments by due date (oldest first)
+    return assignments.sort((a, b) => {
+      return new Date(a.dueDate) - new Date(b.dueDate)
+    })
+  } catch (error) {
+    console.error('Error fetching assignments:', error)
+    return []
   }
-  if (student.semester) {
-    filters.push(where('assignedSemester', '==', student.semester))
-  }
-  const q = filters.length ? query(ref, ...filters) : query(ref)
-  const snap = await getDocs(q)
-  const assignments = snap.docs.map((docSnap) => mapDoc(docSnap))
-  const results = []
-  for (const assignment of assignments) {
-    const submission = await getSubmissionByAssignmentAndStudent({ assignmentId: assignment.id, studentId: student.id })
-    results.push({ ...assignment, submission })
-  }
-  return results
 }
 
 export async function addAdminMessage(message) {

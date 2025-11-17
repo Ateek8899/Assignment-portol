@@ -182,9 +182,9 @@ export default function StudentLogin() {
                   required
                 >
                   <option value="" disabled>Select Degree</option>
-                  <option>BSCS</option>
+                  
                   <option>BSIT</option>
-                  <option>BSCE</option>
+                  
                 </select>
               </label>
 
